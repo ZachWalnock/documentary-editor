@@ -1,0 +1,23 @@
+{
+  "name": "auto-editor-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@next/swc-darwin-arm64": "^14.2.5",
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-config-next": "14.2.5",
+    "math-intrinsics": "^1.1.0",
+    "tsconfig-paths": "^4.2.0"
+  }
+}
