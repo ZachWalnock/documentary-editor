@@ -1,9 +1,8 @@
-'use client';
+'use client'
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 const MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
-const DEFAULT_ENDPOINT = 'http://localhost:8000/upload';
 
 const acceptedExtensions = ['.zip'];
 
@@ -16,10 +15,6 @@ function formatSize(bytes) {
 }
 
 export default function HomePage() {
-  const uploadEndpoint = useMemo(
-    () => process.env.NEXT_PUBLIC_UPLOAD_ENDPOINT ?? DEFAULT_ENDPOINT,
-    []
-  );
 
   const fileInputRef = useRef(null);
   const abortRef = useRef(null);
@@ -101,81 +96,58 @@ export default function HomePage() {
     }
   }, []);
 
-  const beginUpload = useCallback(() => {
+  const beginUpload = useCallback(async () => {
     if (!selectedFile || isUploading) {
       return;
     }
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', uploadEndpoint, true);
-    xhr.withCredentials = false;
-
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable) {
-        return;
+    
+    try {
+      setIsUploading(true);
+      setStatusMessage('Getting upload URL...', 'info');
+      
+      // Extract file extension from the file name
+      const file_name = selectedFile.name
+      const file_extension = file_name.substring(file_name.lastIndexOf('.'));
+      
+      const presigned_response = await fetch("/api/presigned-signature", {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ file_extension, file_name }),
+      });
+      const data = await presigned_response.json();
+      console.log(data)
+      if (!presigned_response.ok) {
+        throw new Error(data.error || 'Failed to get presigned URL');
       }
-      const percent = Math.round((event.loaded / event.total) * 100);
-      setProgress(percent);
-    };
-
-    xhr.onreadystatechange = () => {
-      if (xhr.readyState !== XMLHttpRequest.DONE) {
-        return;
-      }
-
-      setIsUploading(false);
-      abortRef.current = null;
-
-      if (xhr.status >= 200 && xhr.status < 300) {
-        setProgress(100);
-        setStatusMessage('Upload complete.', 'success');
-        return;
-      }
-
-      let message = 'Upload failed. Please try again.';
-      try {
-        const response = JSON.parse(xhr.responseText);
-        if (response?.detail) {
-          message = response.detail;
+      const uploadResponse = await fetch(data.uploadUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Type": selectedFile.type || "application/octet-stream"
+          },
+          body: selectedFile
         }
-      } catch (error) {
-        // ignore response parse errors
+      )
+      const debugging_json = {
+        method: "PUT",
+        headers: {
+          "Content-Type": selectedFile.type || "application/octet-stream"
+        },
+        body: selectedFile
       }
-
-      setStatusMessage(message, 'error');
-      setProgress(0);
-    };
-
-    xhr.onerror = () => {
+      console.log(debugging_json)
+      const body = await uploadResponse.text();
+      console.log(uploadResponse.status, uploadResponse.statusText, body); 
+      
+      setStatusMessage('Upload URL received!', 'success');
+    } catch (error) {
+      console.error('Upload error:', error);
+      setStatusMessage(error.message || 'Upload failed', 'error');
+    } finally {
       setIsUploading(false);
-      abortRef.current = null;
-      setStatusMessage('Network error during upload.', 'error');
-      setProgress(0);
-    };
-
-    xhr.onabort = () => {
-      setIsUploading(false);
-      abortRef.current = null;
-      setStatusMessage('Upload cancelled.', 'info');
-      setProgress(0);
-    };
-
-    setProgress(0);
-    setIsUploading(true);
-    setStatusMessage('Uploading…', 'pending');
-
-    xhr.send(formData);
-
-    controller.signal.addEventListener('abort', () => {
-      xhr.abort();
-    });
-  }, [isUploading, selectedFile, setStatusMessage, uploadEndpoint]);
+    }
+  }, [isUploading, selectedFile, setStatusMessage]);
 
   const cancelUpload = useCallback(() => {
     abortRef.current?.abort();
@@ -241,17 +213,15 @@ export default function HomePage() {
 
         <section className="status">
           <div className="progress" role="status" aria-live="polite">
-            <div className="progress-bar" style={{ width: `${progress}%` }} />
+            <div 
+              className="progress-bar" 
+              {...(progress > 0 && { style: {width: `${progress}`}})}
+              suppressHydrationWarning 
+            />
             <span className="progress-label">{progress ? `${progress}%` : ''}</span>
           </div>
           <p className={`status-message ${status.type || ''}`} aria-live="polite">
             {status.message}
-          </p>
-        </section>
-
-        <section className="endpoint">
-          <p>
-            Upload target: <code>{uploadEndpoint}</code>
           </p>
         </section>
       </main>
