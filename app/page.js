@@ -1,92 +1,15 @@
 'use client'
 
-import { sign } from 'crypto';
-import { useCallback, useMemo, useRef, useState } from 'react';
-
-const MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
-const CHUNK_SIZE = 10 * 1024 * 1024
-const acceptedExtensions = ['.zip'];
-
-function formatSize(bytes) {
-  const mb = bytes / (1024 * 1024);
-  if (mb < 1024) {
-    return `${mb.toFixed(2)} MB`;
-  }
-  return `${(mb / 1024).toFixed(2)} GB`;
-}
-
-function chunk_file(file) {
-  let parts = [];
-  let partNumber = 1;
-  for (let current = 0; current < file.size; current+=CHUNK_SIZE) {
-    let end = Math.min(current+CHUNK_SIZE, file.size);
-    parts.push({partNumber, current, end});
-    partNumber++;
-  }
-  return parts;
-}
-
-async function getPresignedUrls(objectKey, uploadId, numParts) {
-  const signedUrls = await fetch('/api/multi-part-upload/get-presigned-urls', {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      objectKey, uploadId, numParts
-    })
-  })
-  const body = await signedUrls.json()
-  return body.presignedUrls;
-}
-
-async function uploadChunks(presignedUrls, parts, selectedFile) {
-  const promisedChunks = presignedUrls.map(async ({ partNumber, signedUrl }, i) => {
-    const { current, end } = parts[i];
-    const uploadChunk = await fetch(signedUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/octet-stream"
-      },
-      body: selectedFile.slice(current, end)
-    })
-    if (!uploadChunk.ok) {
-      throw new Error(`Chunk ${partNumber}`)
-    }
-    console.log(`Chunk ${partNumber} finished uploading`);
-    const etag = uploadChunk.headers.get("ETag");
-    return { PartNumber: partNumber, ETag: etag };
-  });
-  const uploadedChunks = await Promise.all(promisedChunks);
-  return uploadedChunks;
-}
-
-async function completeUpload(objectKey, uploadId, uploadedParts) {
-  uploadedParts = uploadedParts.sort((a, b) => a.PartNumber - b.PartNumber);
-  const completeReq = await fetch("/api/multi-part-upload/complete-upload", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      objectKey, uploadId, uploadedParts
-    })
-  });
-  return await completeReq.json();
-}
-
-async function abortUpload(objectKey, uploadId) {
-  const abortReq = await fetch("/api/multi-part-upload/abort-upload", {
-    method: "DELETE",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      objectKey, uploadId
-    })
-  })
-  return await abortReq.json()
-}
+import { useCallback, useRef, useState } from 'react';
+import { MAX_SIZE_BYTES, ACCEPTED_EXTENSIONS } from '../lib/constants';
+import { formatSize, chunkFile } from '../lib/utils';
+import {
+  beginUpload as beginUploadAPI,
+  getPresignedUrls,
+  uploadChunks,
+  completeUpload,
+  abortUpload
+} from '../lib/uploadService';
 
 export default function HomePage() {
 
@@ -122,7 +45,7 @@ export default function HomePage() {
       }
 
       const lowerName = file.name.toLowerCase();
-      const hasValidExtension = acceptedExtensions.some((ext) => lowerName.endsWith(ext));
+      const hasValidExtension = ACCEPTED_EXTENSIONS.some((ext) => lowerName.endsWith(ext));
 
       if (!hasValidExtension) {
         setStatusMessage('Only .zip files are supported.', 'error');
@@ -130,7 +53,7 @@ export default function HomePage() {
       }
 
       if (file.size > MAX_SIZE_BYTES) {
-        setStatusMessage('File exceeds 2 GB limit.', 'error');
+        setStatusMessage(`File exceeds ${MAX_SIZE_BYTES / (1024 * 1024 * 1024)} GB limit.`, 'error');
         return;
       }
 
@@ -179,53 +102,28 @@ export default function HomePage() {
       setIsUploading(true);
       setStatusMessage('Getting upload URL...', 'info');
       
-      // Extract file extension from the file name
-      const fileName = selectedFile.name
-      const file_extension = fileName.substring(fileName.lastIndexOf('.'));
-
-      const parts = chunk_file(selectedFile);
-      const beginUpload = await fetch('api/multi-part-upload/begin-upload', {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ fileName, contentType: "application/octet-stream"})
-      });
+      const fileName = selectedFile.name;
+      const parts = chunkFile(selectedFile);
+      
+      const { uploadId, objectKey } = await beginUploadAPI(fileName, "application/octet-stream");
+      console.log("Upload Started...")
+      
       try {
-        const { uploadId, objectKey } = await beginUpload.json();
         const signedUrls = await getPresignedUrls(objectKey, uploadId, parts.length);
-        const uploadedTags = await uploadChunks(signedUrls, parts, selectedFile);
+        console.log("Signed URLs Retrieved. Beginning chunk upload...")
+        setStatusMessage('Uploading chunks...', 'info');
+        const uploadedTags = await uploadChunks(signedUrls, parts, selectedFile, (progressPercent) => {
+          setProgress(progressPercent);
+          setStatusMessage(`Uploading chunks... ${progressPercent}%`, 'info');
+        });
+        console.log("All chunks uploaded. Completing upload...")
+        setStatusMessage('Finalizing upload...', 'info');
         const completedUpload = await completeUpload(objectKey, uploadId, uploadedTags);
+        setStatusMessage('Upload completed successfully!', 'success');
       } catch (err) {
-        console.log(`Error while uploading: ${err}`)
         const abortStatus = await abortUpload(objectKey, uploadId);
+        throw new Error("Uploading chunks failed. This could be due to unstable internet.");
       }
-
-      
-
-      // const chunks = chunk_file(selectedFile);
-      // const presigned_urls = await get_presigned_urls(fileKey, uploadId, chunks.length, "application/octet-stream");
-      // const uploadPromises = presigned_urls.map(async ({ presigned_url, part_number }, i) => {
-      //   let { current, end } = parts[i];
-      //   const uploadFile = await fetch(presigned_url, {
-      //     method: "PUT",
-      //     headers: {
-      //       "Content-Type": "application/octet-stream"
-      //     },
-      //     body: selectedFile.slice(current, end)
-      //   });
-
-      //   if (!uploadFile.ok) {
-      //     throw new Error(`Failed to upload part ${part_number}`);
-      //   }
-      //   const etag = uploadFile.headers.get("ETag");
-      //   return {part_number, etag};
-      // })
-
-      // const uploadResults = await Promise.all(uploadPromises);
-
-      
-      setStatusMessage('Upload URL received!', 'success');
     } catch (error) {
       console.error('Upload error:', error);
       setStatusMessage(error.message || 'Upload failed', 'error');
@@ -300,7 +198,7 @@ export default function HomePage() {
           <div className="progress" role="status" aria-live="polite">
             <div 
               className="progress-bar" 
-              {...(progress > 0 && { style: {width: `${progress}`}})}
+              {...(progress > 0 && { style: {width: `${progress}%`}})}
               suppressHydrationWarning 
             />
             <span className="progress-label">{progress ? `${progress}%` : ''}</span>
