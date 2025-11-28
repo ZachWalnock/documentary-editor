@@ -9,11 +9,15 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.940.0",
+    "@aws-sdk/s3-request-presigner": "^3.940.0",
     "next": "14.2.5",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.7",
     "eslint": "^8.57.0",
     "eslint-config-next": "14.2.5",
     "math-intrinsics": "^1.1.0",
